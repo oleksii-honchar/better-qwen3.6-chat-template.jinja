@@ -1,0 +1,1 @@
+# better-qwen3.6-chat-template.jinja
