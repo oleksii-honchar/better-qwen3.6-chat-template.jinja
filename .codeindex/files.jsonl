@@ -1,0 +1,2 @@
+{"path":"README.md","lang":"markdown","hash":"82cedc8cd5b4c596","lines":86,"title":"Better Qwen3.6 Chat Template","description":"A fixed version of the Qwen3.6 chat template that handles the \"No user query found in messages\" exception gracefully when DCP (Dynamic Context Pruning) removes user queries from the conversation history."}
+{"path":"better-qwen3.6-chat-template.jinja","lang":null,"hash":"cecc30dcfa022b96","lines":213}

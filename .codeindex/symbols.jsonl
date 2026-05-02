@@ -1,0 +1,12 @@
+{"file":"README.md","name":"Better Qwen3.6 Chat Template","kind":"section","line":[1,1]}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Overview","kind":"section","line":[3,3],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Source","kind":"section","line":[7,7],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Problem","kind":"section","line":[11,11],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Problem/Root Cause","kind":"section","line":[19,19],"parent":"Better Qwen3.6 Chat Template/Problem"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Changes Applied","kind":"section","line":[25,25],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Changes Applied/1. Added `found_user_query` flag (Line 89)","kind":"section","line":[27,27],"parent":"Better Qwen3.6 Chat Template/Changes Applied"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Changes Applied/2. Set flag when user query is found (Line 97)","kind":"section","line":[39,39],"parent":"Better Qwen3.6 Chat Template/Changes Applied"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Changes Applied/3. Graceful degradation instead of exception (Lines 101-104)","kind":"section","line":[48,48],"parent":"Better Qwen3.6 Chat Template/Changes Applied"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Behavior After Fix","kind":"section","line":[66,66],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Files","kind":"section","line":[73,73],"parent":"Better Qwen3.6 Chat Template"}
+{"file":"README.md","name":"Better Qwen3.6 Chat Template/Deferred Changes (Not Included)","kind":"section","line":[80,80],"parent":"Better Qwen3.6 Chat Template"}
