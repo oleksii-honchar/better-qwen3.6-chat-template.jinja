@@ -1,8 +1,0 @@
-{
-  "version": "1.0",
-  "name": "better-qwen3.6-chat-template.jinja",
-  "root": ".",
-  "languages": [
-    "markdown"
-  ]
-}
