@@ -1,0 +1,198 @@
+{# Qwen3.6 chat template with DSML tool call format for llama.cpp #}
+{# llama.cpp PEG parser expects DSML XML format for tool calls #}
+{%- set image_count = namespace(value=0) %}
+{%- set video_count = namespace(value=0) %}
+{%- macro render_content(content, do_vision_count, is_system_content=false) %}
+    {%- if content is string %}
+        {{- content }}
+    {%- elif content is iterable and content is not mapping %}
+        {%- for item in content %}
+            {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}
+                {%- if is_system_content %}
+                    {{- raise_exception('System message cannot contain images.') }}
+                {%- endif %}
+                {%- if do_vision_count %}
+                    {%- set image_count.value = image_count.value + 1 %}
+                {%- endif %}
+                {%- if add_vision_id is defined and add_vision_id %}
+                    {{- 'Picture ' ~ image_count.value ~ ': ' }}
+                {%- endif %}
+                {{- '' }}
+            {%- elif 'video' in item or item.type == 'video' %}
+                {%- if is_system_content %}
+                    {{- raise_exception('System message cannot contain videos.') }}
+                {%- endif %}
+                {%- if do_vision_count %}
+                    {%- set video_count.value = video_count.value + 1 %}
+                {%- endif %}
+                {%- if add_vision_id is defined and add_vision_id %}
+                    {{- 'Video ' ~ video_count.value ~ ': ' }}
+                {%- endif %}
+                {{- '' }}
+            {%- elif 'text' in item %}
+                {{- item.text }}
+            {%- else %}
+                {{- raise_exception('Unexpected item type in content.') }}
+            {%- endif %}
+        {%- endfor %}
+    {%- elif content is none or content is undefined %}
+        {{- '' }}
+    {%- else %}
+        {{- raise_exception('Unexpected content type.') }}
+    {%- endif %}
+{%- endmacro %}
+{%- set ns_flags = namespace(enable_thinking=true) %}
+{%- if enable_thinking is defined %}
+    {%- set ns_flags.enable_thinking = enable_thinking %}
+{%- endif %}
+{%- if not messages %}
+    {{- raise_exception('No messages provided.') }}
+{%- endif %}
+{%- if tools and tools is iterable and tools is not mapping %}
+    {{- '<|im_start|>system\n' }}
+    {{- "# Tools\n\nYou have access to the following functions:\n\n" }}
+    {%- for tool in tools %}
+        {{- "\n" }}
+        {{- tool | tojson }}
+    {%- endfor %}
+    {{- '\n\nFor each function call, use DSML format:\n\n<|DSML|function_calls>\n<|DSML|invoke name="function_name">\n<|DSML|parameter name="param_name">value</|DSML|parameter>\n</|DSML|invoke>\n</|DSML|function_calls>' }}
+    {%- if messages[0].role == 'system' or messages[0].role == 'developer' %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {%- if '<control no_think>' in content %}
+            {%- set ns_flags.enable_thinking = false %}
+            {%- set content = content.replace('<control no_think>', '') %}
+        {%- endif %}
+        {%- if '<control must_think>' in content %}
+            {%- set ns_flags.enable_thinking = true %}
+            {%- set content = content.replace('<control must_think>', '') %}
+        {%- endif %}
+        {%- set content = content.strip() %}
+        {%- if content %}
+            {{- '\n\n' + content }}
+        {%- endif %}
+    {%- endif %}
+    {{- '<|im_end|>\n' }}
+{%- else %}
+    {%- if messages[0].role == 'system' or messages[0].role == 'developer' %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {%- if '<control no_think>' in content %}
+            {%- set ns_flags.enable_thinking = false %}
+            {%- set content = content.replace('<control no_think>', '') %}
+        {%- endif %}
+        {%- if '<control must_think>' in content %}
+            {%- set ns_flags.enable_thinking = true %}
+            {%- set content = content.replace('<control must_think>', '') %}
+        {%- endif %}
+        {%- set content = content.strip() %}
+        {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
+    {%- endif %}
+{%- endif %}
+{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1, found_user_query=false) %}
+{%- for message in messages[::-1] %}
+    {%- set index = (messages|length - 1) - loop.index0 %}
+    {%- if ns.multi_step_tool and message.role == "user" %}
+        {%- set content = render_content(message.content, false)|trim %}
+        {%- if not(content.startswith('<|DSML|output>') and content.endswith('</|DSML|output>')) %}
+            {%- set ns.multi_step_tool = false %}
+        {%- endif %}
+        {%- set ns.last_query_index = index %}
+        {%- set ns.found_user_query = true %}
+    {%- endif %}
+{%- endfor %}
+{%- if ns.multi_step_tool %}
+    {%- if not ns.found_user_query %}
+        {%- set ns.multi_step_tool = false %}
+    {%- endif %}
+{%- endif %}
+{%- for message in messages %}
+    {%- set content = render_content(message.content, true)|trim %}
+    {%- if '<control no_think>' in content %}
+        {%- set ns_flags.enable_thinking = false %}
+        {%- set content = content.replace('<control no_think>', '') %}
+    {%- endif %}
+    {%- if '<control must_think>' in content %}
+        {%- set ns_flags.enable_thinking = true %}
+        {%- set content = content.replace('<control must_think>', '') %}
+    {%- endif %}
+    {%- set content = content.strip() %}
+    {%- if message.role == "system" or message.role == "developer" %}
+        {%- if not loop.first %}
+            {{- raise_exception('System message must be at the beginning.') }}
+        {%- endif %}
+    {%- elif message.role == "user" %}
+        {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>\n' }}
+    {%- elif message.role == "assistant" %}
+        {%- set reasoning_content = '' %}
+        {%- if message.reasoning_content is string %}
+            {%- set reasoning_content = message.reasoning_content %}
+        {%- else %}
+            {%- set has_think_tag = false %}
+            {%- set think_end_token = '</thinking>' %}
+            {%- if '</thinking>' in content %}
+                {%- set has_think_tag = true %}
+            {%- elif '<thinking>' in content %}
+                {%- set has_think_tag = true %}
+            {%- endif %}
+            {%- if has_think_tag %}
+                {%- set reasoning_content = content.split(think_end_token)[0].rstrip('\n').split('<thinking>')[-1].lstrip('\n') %}
+                {%- set content = content.split(think_end_token)[-1].lstrip('\n') %}
+            {%- endif %}
+        {%- endif %}
+        {%- set reasoning_content = reasoning_content|trim %}
+        {%- set show_think = false %}
+        {%- if loop.index0 > ns.last_query_index %}
+            {%- set show_think = true %}
+        {%- elif ns_flags.enable_thinking and (preserve_thinking is undefined or preserve_thinking is true) and reasoning_content|length > 0 %}
+            {%- set show_think = true %}
+        {%- endif %}
+        {%- if show_think %}
+            {{- '<|im_start|>' + message.role + '\n<thinking>\n' + reasoning_content + '\n</thinking>\n\n' + content }}
+        {%- else %}
+            {{- '<|im_start|>' + message.role + '\n' + content }}
+        {%- endif %}
+        {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping %}
+            {{- '<|DSML|function_calls>\n' }}
+            {%- for tool_call in message.tool_calls %}
+                {%- if tool_call.function is defined %}
+                    {%- set tool_call = tool_call.function %}
+                {%- endif %}
+                {{- '<|DSML|invoke name="' + tool_call.name + '">' }}
+                {%- if tool_call.arguments is defined and tool_call.arguments is string %}
+                    {%- set args = tool_call.arguments | fromjson %}
+                    {%- for arg_name, arg_value in args.items() %}
+                        {{- '\n<|DSML|parameter name="' + arg_name + '">' + (arg_value | tojson) + '</|DSML|parameter>' }}
+                    {%- endfor %}
+                {%- elif tool_call.arguments is defined and tool_call.arguments is mapping %}
+                    {%- for arg_name, arg_value in tool_call.arguments.items() %}
+                        {{- '\n<|DSML|parameter name="' + arg_name + '">' + (arg_value | tojson) + '</|DSML|parameter>' }}
+                    {%- endfor %}
+                {%- endif %}
+                {{- '</|DSML|invoke>\n' }}
+            {%- endfor %}
+            {{- '</|DSML|function_calls>' }}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- elif message.role == "tool" %}
+        {%- if loop.previtem and loop.previtem.role != "tool" %}
+            {{- '<|im_start|>user' }}
+        {%- endif %}
+        {{- '\n<|DSML|output>\n' }}
+        {{- content }}
+        {{- '\n</|DSML|output>' }}
+        {%- if not loop.last and loop.nextitem.role != "tool" %}
+            {{- '<|im_end|>\n' }}
+        {%- elif loop.last %}
+            {{- '<|im_end|>\n' }}
+        {%- endif %}
+    {%- else %}
+        {{- raise_exception('Unexpected message role.') }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n' }}
+    {%- if ns_flags.enable_thinking is false %}
+        {{- '<thinking>\n\n</thinking>\n\n' }}
+    {%- else %}
+        {{- '<thinking>\n' }}
+    {%- endif %}
+{%- endif %}
