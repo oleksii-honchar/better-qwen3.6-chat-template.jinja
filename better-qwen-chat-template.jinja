@@ -54,7 +54,7 @@
         {{- tool | tojson }}
     {%- endfor %}
     {{- "\n</tools>" }}
-    {{- '\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: a JSON object with "name" and "arguments" fields must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>' }}
+    {{- '\n\nFor each function call, return a json object with function type, name and arguments within <tool_call></tool_call> XML tags:\n\n<tool_call>\n{"type": "function", "name": <function-name>, "arguments": <args-json-object>}\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: a JSON object with "type", "name" and "arguments" fields must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>' }}
     {%- if messages[0].role == 'system' or messages[0].role == 'developer' %}
         {%- set content = render_content(messages[0].content, false, true)|trim %}
         {%- if '<|think_off|>' in content %}
@@ -167,7 +167,7 @@
                 {%- else %}
                     {{- '\n<tool_call>\n' }}
                 {%- endif %}
-                {{- '{"name": "' + tool_call.name + '", "arguments": ' }}
+                {{- '{"type": "function", "name": "' + tool_call.name + '", "arguments": ' }}
                 {%- if tool_call.arguments is defined and tool_call.arguments is string %}
                     {{- tool_call.arguments }}
                 {%- elif tool_call.arguments is defined and tool_call.arguments is mapping %}
