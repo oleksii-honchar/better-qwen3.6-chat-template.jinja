@@ -1,0 +1,99 @@
+# Fix: Tool Call Format for litellm Compatibility
+
+## Overview
+
+The Qwopus3.6 chat template renders tool calls as text content that litellm's OpenAI-compatible parser cannot extract into structured `tool_calls`. This spec defines the fix: use v19 as the structural base template, but replace its XML-style tool call format with an OpenAI-compatible JSON format that litellm's `_check_and_fix_if_content_is_tool_call` fallback parser can parse.
+
+## Architecture Diagram
+
+```mermaid
+graph LR
+    A[llama.cpp sends request<br>with tools in OpenAI format] --> B[Chat template renders<br>tool definitions + instructions]
+    B --> C[Model generates response<br>with tool calls in text]
+    C --> D[llama.cpp returns response<br>with content field only]
+    D --> E[litellm _transform_choices<br>looks for tool_calls field]
+    E --> F{tool_calls found?}
+    F -->|No| G[_check_and_fix_if_content_is_tool_call<br>tries to parse content as JSON]
+    G --> H{JSON has type=function<br>and name in tool_call_names?}
+    H -->|Yes| I[Creates ChatCompletionMessageToolCall]
+    H -->|No| J[Returns None — tool call lost]
+    I --> K[tool_calls populated<br>downstream works]
+    J --> L[MidStreamFallbackError]
+```
+
+## Problem Recap
+
+### Current Flow (Broken)
+
+1. litellm sends `tools` in OpenAI format to llama.cpp
+2. Chat template renders tool definitions as JSON in `<tools>` block with instructions to use `<tool_call>\n{"name": "X", "arguments": {...}}\n</tool_call>` format
+3. Model generates: `<tool_call>\n{"name": "grep", "arguments": {"pattern": "test"}}\n</tool_call>`
+4. llama.cpp returns response with tool call text in `content` field (NOT in `tool_calls`)
+5. litellm looks for `tool_calls` — finds `None` — falls back to `_check_and_fix_if_content_is_tool_call()`
+6. Fallback parser tries `json.loads(content)` → succeeds → checks `json_content.get("type") == "function"` → **FAILS** (no `type` field)
+7. Tool call lost, downstream consumer fails
+
+### V19 Flow (Also Broken — Worse)
+
+Same steps, but step 3 produces: `<tool_call>\n<function=grep>\n<parameter=pattern>\ntest\n</parameter>\n</function>\n</tool_call>` — XML format, `json.loads()` throws immediately.
+
+## Solution Design
+
+### Chosen Format: OpenAI-Compatible JSON with `type` field
+
+The chat template will instruct the model to output tool calls in this format:
+
+```
+<tool_call>
+{"type": "function", "name": "grep", "arguments": {"pattern": "test"}}
+</tool_call>
+```
+
+This matches litellm's `_check_and_fix_if_content_is_tool_call` expectations:
+- `json.loads(content)` succeeds
+- `json_content.get("type") == "function"` ✓
+- `json_content.get("name") in tool_call_names` ✓
+- Returns `ChatCompletionMessageToolCall(function=Function(name="grep", arguments={"pattern": "test"}))` ✓
+
+### Why This Format
+
+| Criterion | OpenAI JSON with `type` | V19 XML | Current v18 JSON |
+|-----------|------------------------|---------|-------------------|
+| litellm `_check_and_fix_if_content_is_tool_call` compatible | ✅ Yes | ❌ No (not JSON) | ❌ No (missing `type`) |
+| Parseable by `json.loads()` | ✅ Yes | ❌ No | ✅ Yes |
+| Has `type` field | ✅ Yes | ❌ No | ❌ No |
+| Supports parallel tool calls | ⚠️ Partial (single per `</tool_call>` block) | ⚠️ Partial | ⚠️ Partial |
+| Model can follow instructions | ✅ Yes (JSON is familiar) | ✅ Yes | ✅ Yes |
+
+### Limitation: Single Tool Call per Content
+
+litellm's `_check_and_fix_if_content_is_tool_call` only handles **one** tool call from the entire content string. It calls `json.loads(content)` on the full content and expects a single JSON object. This means:
+
+- **Single tool call**: Works perfectly
+- **Parallel tool calls**: The model would need to output all tool calls in a way that `json.loads()` can parse — this is inherently limited
+
+For parallel tool calls, we rely on the model outputting them sequentially (one `<tool_call>\n...\n</tool_call>` block per call). litellm processes the full content string once — if it contains multiple `<tool_call>\n...\n</tool_call>` blocks, only the first valid JSON object will be parsed.
+
+**This is acceptable** because:
+1. The current v18 template also has this limitation (it outputs one JSON per `</tool_call>` block)
+2. The primary issue is single tool call parsing failing entirely — fixing that is the priority
+3. Parallel tool calls are a secondary concern
+
+## Specific Changes to v19 Base Template
+
+### Change 1: Tool Call Instructions (lines 74-102)
+
+**Replace** the XML-style tool call instructions with OpenAI-compatible JSON instructions:
+
+**BEFORE (v19, lines 74-102):**
+```jinja
+{%- set tool_instructions %}
+If you choose to call a function ONLY reply in the following format with NO suffix:
+
+<think>
+Brief explanation of tool call
+</think>
+<tool_call>
+<function=example_function_name>
+<parameter=example_parameter_1>
+value_1
