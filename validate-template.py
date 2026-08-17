@@ -5,7 +5,9 @@ Validate the better-qwen3.6-chat-template.jinja template.
 Checks:
   1. Jinja2 syntax — template parses without errors
   2. Rendering — renders with various realistic inputs
-  3. Output format — tool calls use Hermes JSON format, not XML
+  3. Output format — tool calls use XML format (<tool_call><function=...><parameter=...>)
+  4. Reasoning effort (3.8 template only) — instruction injection/omission and
+     exception behavior per materials/design-qwen38-template.md §"Validation scenarios"
 
 Usage:
   python3 validate-template.py [path/to/template.jinja]
@@ -14,7 +16,6 @@ Usage:
     /Users/oleksii.honchar/www/misc/better-qwen3.6-chat-template.jinja/better-qwen3.6-chat-template.jinja
 """
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -25,6 +26,18 @@ DEFAULT_TEMPLATE = (
     "/Users/oleksii.honchar/www/misc/better-qwen3.6-chat-template.jinja/"
     "better-qwen3.6-chat-template.jinja"
 )
+
+# Reasoning-effort instruction texts (verbatim from the native Qwen3.8 template).
+XHIGH_INSTRUCTION = (
+    "Reasoning effort is set to xhigh. Please think carefully through the task, "
+    "validate key assumptions, consider plausible alternatives, and prioritize "
+    "correctness, consistency, and clarity in the final answer."
+)
+LOW_INSTRUCTION = (
+    "Reasoning effort is set to low. Keep your thinking brief and focused, "
+    "moving directly to the conclusion without unnecessary elaboration."
+)
+ALL_INSTRUCTIONS = (XHIGH_INSTRUCTION, LOW_INSTRUCTION)
 
 # ---------------------------------------------------------------------------
 # Custom Jinja environment
@@ -49,6 +62,14 @@ def load_template(path: str) -> jinja2.Template:
     env = make_env()
     source = Path(path).read_text(encoding="utf-8")
     return env.from_string(source, globals={"raise_exception": _raise_exception})
+
+def has_effort_support(source: str) -> bool:
+    """True when the template implements the reasoning_effort block (3.8+).
+    Detected from template source so the check stays valid regardless of the
+    file's name: the 3.6 template contains no 'reasoning_effort' references and
+    therefore skips the effort scenarios; the 3.8 template runs them fully.
+    """
+    return "reasoning_effort" in source
 
 # ---------------------------------------------------------------------------
 # Test scenarios — each returns a dict of template variables
@@ -351,33 +372,130 @@ def scenario_raise_exception():
         "_expect_error": True,
     }
 
+def _effort_tools():
+    """Minimal tools definition shared by effort tool scenarios."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }
+    ]
+
+def _effort_base_kwargs():
+    return {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": None,
+        "add_generation_prompt": False,
+    }
+
+def scenario_effort_default_xhigh():
+    """Effort undefined + thinking on -> xhigh instruction injected (native default)."""
+    return {
+        **_effort_base_kwargs(),
+        "_expected_instruction": XHIGH_INSTRUCTION,
+    }
+
+def scenario_effort_medium():
+    """Effort=medium -> valid value, but NO instruction injected."""
+    return {
+        **_effort_base_kwargs(),
+        "reasoning_effort": "medium",
+        "_expected_no_instruction": True,
+    }
+
+def scenario_effort_low():
+    """Effort=low -> low instruction injected."""
+    return {
+        **_effort_base_kwargs(),
+        "reasoning_effort": "low",
+        "_expected_instruction": LOW_INSTRUCTION,
+    }
+
+def scenario_effort_xhigh():
+    """Effort=xhigh -> xhigh instruction injected."""
+    return {
+        **_effort_base_kwargs(),
+        "reasoning_effort": "xhigh",
+        "_expected_instruction": XHIGH_INSTRUCTION,
+    }
+
+def scenario_effort_high_remap():
+    """Effort=high -> remapped to xhigh (xhigh instruction, no error)."""
+    return {
+        **_effort_base_kwargs(),
+        "reasoning_effort": "high",
+        "_expected_instruction": XHIGH_INSTRUCTION,
+    }
+
+def scenario_effort_invalid():
+    """Effort=bogus + thinking on -> TemplateError with native message."""
+    return {
+        **_effort_base_kwargs(),
+        "reasoning_effort": "bogus",
+        "_expect_error": True,
+        "_expected_error_message": "Unexpected reasoning effort bogus",
+    }
+
+def scenario_effort_thinking_off_low():
+    """Thinking off + effort=low -> no instruction (effort gated by thinking)."""
+    return {
+        **_effort_base_kwargs(),
+        "enable_thinking": False,
+        "reasoning_effort": "low",
+        "_expected_no_instruction": True,
+    }
+
+def scenario_effort_thinking_off_bogus():
+    """Thinking off + effort=bogus -> no error AND no instruction (gated, native)."""
+    return {
+        **_effort_base_kwargs(),
+        "enable_thinking": False,
+        "reasoning_effort": "bogus",
+        "_expected_no_instruction": True,
+    }
+
+def scenario_effort_tools_xhigh():
+    """Tools + effort=xhigh -> instruction appears BEFORE the # Tools block."""
+    return {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": _effort_tools(),
+        "add_generation_prompt": False,
+        "reasoning_effort": "xhigh",
+        "_expected_instruction": XHIGH_INSTRUCTION,
+        "_expected_instruction_before": "# Tools",
+    }
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-def assert_no_xml_tool_calls(output: str, name: str) -> None:
-    """Ensure the output does NOT contain XML-style tool calls."""
-    if re.search(r"<function=", output):
-        raise AssertionError(f"[{name}] Found XML-style <function= tag — should be Hermes JSON")
-    if re.search(r"<parameter=", output):
-        raise AssertionError(f"[{name}] Found XML-style <parameter= tag — should be Hermes JSON")
-
-def assert_hermes_json_tool_calls(output: str, name: str, expected_names: list[str]) -> None:
-    """Ensure tool calls are in Hermes JSON format."""
-    pattern = r'\{"name":\s*"([^"]+)",\s*"arguments":\s*(\{[^}]*\})\}'
-    found = re.findall(pattern, output)
-    found_names = [m[0] for m in found]
-
-    if not found and expected_names:
-        raise AssertionError(
-            f"[{name}] Expected {len(expected_names)} Hermes JSON tool call(s), found 0"
-        )
+def assert_xml_tool_calls(output: str, name: str, expected_names: list[str], expected_parameters: list[str]) -> None:
+    """Ensure tool calls are in Qwen XML format:
+    <tool_call><function=name><parameter=arg>value</parameter></function></tool_call>."""
+    if "<tool_call>" not in output:
+        raise AssertionError(f"[{name}] Expected <tool_call> XML tag in output")
+    if "</tool_call>" not in output:
+        raise AssertionError(f"[{name}] Expected </tool_call> closing tag in output")
 
     for ename in expected_names:
-        if ename not in found_names:
-            raise AssertionError(
-                f"[{name}] Expected tool call for '{ename}', found: {found_names}"
-            )
+        if f"<function={ename}>" not in output:
+            raise AssertionError(f"[{name}] Expected <function={ename}> XML tag in output")
+    if not re.search(r"</function>", output):
+        raise AssertionError(f"[{name}] Expected </function> closing tag in output")
+
+    for pname in expected_parameters:
+        if f"<parameter={pname}>" not in output:
+            raise AssertionError(f"[{name}] Expected <parameter={pname}> XML tag in output")
+        if f"</parameter>" not in output:
+            raise AssertionError(f"[{name}] Expected </parameter> closing tag in output")
 
 def assert_tool_result_format(output: str, name: str) -> None:
     """Ensure tool results use the <tool_response> / </tool_response> format."""
@@ -407,22 +525,59 @@ def run_scenario(template: jinja2.Template, scenario_name: str, kwargs: dict) ->
     """Render one scenario and run assertions."""
     expect_error = kwargs.pop("_expect_error", False)
     expected_tool_names = kwargs.pop("_expected_tool_names", [])
+    expected_parameters = kwargs.pop("_expected_parameters", [])
+    expected_instruction = kwargs.pop("_expected_instruction", None)
+    expected_no_instruction = kwargs.pop("_expected_no_instruction", False)
+    expected_instruction_before = kwargs.pop("_expected_instruction_before", None)
+    expected_error_message = kwargs.pop("_expected_error_message", None)
 
     try:
         output = template.render(**kwargs)
     except TemplateError as e:
         if expect_error:
+            if expected_error_message and expected_error_message not in str(e):
+                raise AssertionError(
+                    f"[{scenario_name}] Expected error containing {expected_error_message!r}, got: {e}"
+                )
             print(f"  OK — expected error: {e}")
             return
         raise AssertionError(f"[{scenario_name}] Unexpected error: {e}")
 
+    if expect_error:
+        raise AssertionError(
+            f"[{scenario_name}] Expected TemplateError, but template rendered successfully"
+        )
+
     # Basic checks for all non-error scenarios
-    assert_no_xml_tool_calls(output, scenario_name)
     assert_no_double_escape(output, scenario_name)
+
+    # Reasoning-effort checks (rendered-output behavior only)
+    if expected_instruction:
+        if expected_instruction not in output:
+            raise AssertionError(
+                f"[{scenario_name}] Expected reasoning-effort instruction in output"
+            )
+        if expected_instruction_before:
+            if expected_instruction_before not in output:
+                raise AssertionError(
+                    f"[{scenario_name}] Expected marker {expected_instruction_before!r} in output"
+                )
+            if output.index(expected_instruction) > output.index(expected_instruction_before):
+                raise AssertionError(
+                    f"[{scenario_name}] Instruction must appear BEFORE "
+                    f"{expected_instruction_before!r}"
+                )
+
+    if expected_no_instruction:
+        for instr in ALL_INSTRUCTIONS:
+            if instr in output:
+                raise AssertionError(
+                    f"[{scenario_name}] Expected no reasoning-effort instruction, found one"
+                )
 
     # Scenario-specific checks
     if expected_tool_names:
-        assert_hermes_json_tool_calls(output, scenario_name, expected_tool_names)
+        assert_xml_tool_calls(output, scenario_name, expected_tool_names, expected_parameters)
 
     if "tool_result" in scenario_name:
         assert_tool_result_format(output, scenario_name)
@@ -469,20 +624,38 @@ def main() -> None:
         ("raise_exception", scenario_raise_exception),
     ]
 
+    if has_effort_support(Path(template_path).read_text(encoding="utf-8")):
+        scenarios.extend([
+            ("effort_default_xhigh", scenario_effort_default_xhigh),
+            ("effort_medium", scenario_effort_medium),
+            ("effort_low", scenario_effort_low),
+            ("effort_xhigh", scenario_effort_xhigh),
+            ("effort_high_remap", scenario_effort_high_remap),
+            ("effort_invalid", scenario_effort_invalid),
+            ("effort_thinking_off_low", scenario_effort_thinking_off_low),
+            ("effort_thinking_off_bogus", scenario_effort_thinking_off_bogus),
+            ("effort_tools_xhigh", scenario_effort_tools_xhigh),
+        ])
+    else:
+        print("  (template has no reasoning_effort block — effort scenarios skipped)")
+
     failed = 0
     for sname, sfunc in scenarios:
         kwargs = sfunc()
-        # Inject expected tool names for validation
+        # Inject expected tool names + parameters for validation
         if "with_tools_and_tool_call" == sname:
             kwargs["_expected_tool_names"] = ["read_file"]
+            kwargs["_expected_parameters"] = ["path"]
         elif "tool_call_string_args" == sname:
             kwargs["_expected_tool_names"] = ["search"]
         elif "tool_call_missing_args" == sname:
             kwargs["_expected_tool_names"] = ["ping"]
         elif "multi_tool_calls" == sname:
             kwargs["_expected_tool_names"] = ["read_file"]
+            kwargs["_expected_parameters"] = ["path"]
         elif "tool_result" == sname:
             kwargs["_expected_tool_names"] = ["read_file"]
+            kwargs["_expected_parameters"] = ["path"]
 
         try:
             run_scenario(tmpl, sname, kwargs)
